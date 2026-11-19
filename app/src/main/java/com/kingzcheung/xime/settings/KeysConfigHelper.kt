@@ -1987,8 +1987,11 @@ object KeysConfigHelper {
             LayoutKind.MERGED -> {
                 if (profile.language != InputLanguage.CHINESE) return config[normalized]
                 val fourteen = profile.layout == InputLayout.MERGED14
+                // 内置 17/18 键按自己那一段的行取按键顺序（qwerty_18 的 we/rt/io…），自建布局仍走 26 键那张表。
+                val builtinRows = if (fourteen || custom != null) null else
+                    _mergedRows[profile.layout.id]?.flatten()?.filter { cell -> cell.isNotEmpty() && cell.all { it in 'a'..'z' } }
                 val keys = if (fourteen) FourteenKeySymbols.keys
-                    else _zhRows.flatten().filter { cell -> cell.isNotEmpty() && cell.all { it in 'a'..'z' } }
+                    else builtinRows ?: _zhRows.flatten().filter { cell -> cell.isNotEmpty() && cell.all { it in 'a'..'z' } }
                 val owner = MergedKeySymbols.ownerOf(keys, normalized)
                 if (owner !in keys) return config[normalized]
                 // 自建布局的手势表按旧的位置填过 swipe，不算用户写的；内置 14/17/18 键只认 xime.custom.yaml 写的。

@@ -7,7 +7,7 @@ import org.json.JSONObject
 
 /** 统一中文词库；标准 Rime ID 不变，现有市场版本和个人补丁优先。 */
 object ChineseSchemas {
-    val ids = listOf("t9_pinyin", "rime_ice", "pinyin_14jian", "double_pinyin_flypy", "double_pinyin_flypy_14jian") + BuiltinLetterLayouts.ids
+    val ids = listOf("t9_pinyin", "rime_ice", "pinyin_14jian", "pinyin_18jian", "double_pinyin_flypy", "double_pinyin_flypy_14jian") + BuiltinLetterLayouts.ids
     private const val ADDED = "cyime_chinese_defaults_v1"
     private const val DOUBLE_PINYIN_ADDED = "cyime_double_pinyin_defaults_v1"
 
@@ -190,6 +190,7 @@ object ChineseSchemas {
         "pinyin_simp" -> "旧版简体拼音"
         "t9_pinyin", "t9" -> "中文九键"
         "pinyin_14jian" -> "中文14键"
+        "pinyin_18jian" -> "中文18键"
         else -> original
     }
 }

@@ -1,0 +1,102 @@
+name: Eta 18-key build & release
+
+# 只手动触发：不跟随上游 tag，避免和官方 release.yml 抢发布。
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '发布用的 tag（例：v1.15.100-eta18）'
+        required: true
+        default: 'v1.15.100-eta18'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+
+      - name: Install NDK
+        run: |
+          sdkmanager "ndk;29.0.14206865"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> $GITHUB_ENV
+          echo "ANDROID_NDK=$ANDROID_HOME/ndk/29.0.14206865" >> $GITHUB_ENV
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
+      - name: Check signing secrets
+        run: |
+          if [ -z "${{ secrets.SIGNING_KEY }}" ]; then
+            echo "::error::缺少 SIGNING_KEY 密钥，请先在仓库 Secrets 里配置"
+            exit 1
+          fi
+
+      - name: Setup signing keystore
+        run: |
+          cat > app/keystore.properties <<'EOF'
+          keyBase64=${{ secrets.SIGNING_KEY }}
+          storePassword=${{ secrets.KEY_STORE_PASSWORD }}
+          keyAlias=${{ secrets.ALIAS }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          EOF
+
+      - name: Download native deps (ONNX Runtime)
+        run: ./gradlew downloadOnnx --no-daemon
+
+      - name: Build signed release APK
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+          ls -l app/build/outputs/apk/release/
+
+      - name: Verify APK signature
+        run: |
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | tail -1)
+          for apk in app/build/outputs/apk/release/*.apk; do
+            "$APKSIGNER" verify --verbose --min-sdk-version 23 "$apk"
+          done
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: CyIME ${{ inputs.tag }}
+          body: |
+            基于 CyIME（GPLv3）自带构建，加入内置「中文18键」拼音方案。
+
+            键位（与微信输入法 18 键一致）：
+
+            ```
+            Q   WE  RT  Y   U   IO  P
+            A   SD  FG  H   JK  L
+            Z   XC  V   BN  M
+            ```
+
+            合并键点按送组内第一个字母，由方案里的 derive 规则派生成代表字母序列，靠雾凇词库消歧。
+
+            安装后在「设置 › 语言与方案」里启用「中文18键」，再把它选为当前方案。
+          files: app/build/outputs/apk/release/*.apk
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: false

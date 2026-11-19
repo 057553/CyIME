@@ -12,7 +12,7 @@ object CyimeInputDefaults {
      * 「已安装的方案」里关着也直接列出、不收进「其他已安装方案（高级）」的。
      * 英文单词方案（11-09）也在这里：关着也列在「语言与方案」英文的方案里，点了才启用，不加进默认启用。
      */
-    val listedWhenOff: List<String> get() = recommended + "pinyin_14jian" + doublePinyin + shapeAndStroke + InputModes.ENGLISH_WORDS
+    val listedWhenOff: List<String> get() = recommended + "pinyin_14jian" + "pinyin_18jian" + doublePinyin + shapeAndStroke + InputModes.ENGLISH_WORDS
 
     /**
      * 形码、笔画、注音（用户 11-04：收在「其他已安装方案」里，以为没有）：随包的仓颉、速成、笔画、注音和下载后的五笔
@@ -98,7 +98,7 @@ object CyimeInputDefaults {
     fun hasIndependentToggle(id: String, available: Set<String>) = !isCompanion(id) && visibleSchema(id, available)
 
     fun description(id: String): String? = when (id) {
-        "t9_pinyin", "rime_ice", "pinyin_14jian", "double_pinyin_flypy" -> "默认雾凇词库 · 支持市场同名更新"
+        "t9_pinyin", "rime_ice", "pinyin_14jian", "pinyin_18jian", "double_pinyin_flypy" -> "默认雾凇词库 · 支持市场同名更新"
         "japanese", "japanese_kana" -> "共享日语词库 · 支持市场同名方案更新"
         else -> null
     }

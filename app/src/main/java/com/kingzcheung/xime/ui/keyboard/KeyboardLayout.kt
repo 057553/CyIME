@@ -159,6 +159,10 @@ fun KeyboardLayout(
     // Shared physical frame and bottom-row spacing for 14/26 keys. The paired
     // alphabet keys still occupy their own five-column rows inside that frame.
     val fourteenKey = !isAsciiMode && uiState.inputProfile.layout == com.kingzcheung.xime.settings.InputLayout.MERGED14
+    // 内置合并键布局（qwerty_17 / qwerty_18 等，非自建布局）：键面同样是双字母键，占两格。
+    // 只用于按字母数分配宽度；14 键专属的行为（Shift 拆字、左右滑动选字母、14 键角标表）不跟着开。
+    val mergedPairLayout = !isAsciiMode && !fourteenKey && letterLayout == null &&
+        uiState.inputProfile.layout.kind == com.kingzcheung.xime.settings.LayoutKind.MERGED
     // 逗号键分词（默认关）：中文全拼、双拼时标点键多一个 ' 角标，字母键角标里的 ' 打拼音时也是分词。
     val syllableSplit = syllableSplitActive(LocalKeyboardInputPreferences.current.syllableSplitKey, isAsciiMode, uiState.inputProfile)
     // 英文和西、德、法、意语：同一个开关让标点键多一个 ' 角标，打单词时它接进词里（what's），见 apostropheSplitActive。
@@ -273,7 +277,7 @@ fun KeyboardLayout(
     val letterSideKeyWeight = if (!shiftKeyShown) 0f else geometryOverride?.shiftKeyWeight ?: frameSideKeyWeight
     val letterDeleteKeyWeight = geometryOverride?.deleteKeyWeight ?: letterRowGeometry?.deleteKeyWeight ?: 1.4f
     val letterBottomWeight = letterRowGeometry?.bottomLetterWeight ?: 7f
-    val splitWeighted = letterLayout != null || fourteenKey
+    val splitWeighted = letterLayout != null || fourteenKey || mergedPairLayout
     val baseRow1 = keyRows.getOrElse(1) { listOf("a", "s", "d", "f", "g", "h", "j", "k", "l") }
     val splitRow1InsetDp = standardRowInset
         ?: if ((if (splitWeighted) baseRow1.sumOf { it.length } else baseRow1.size) > 9) 0.dp else 16.dp
@@ -602,6 +606,7 @@ fun KeyboardLayout(
     CompositionLocalProvider(
         LocalKeyGapLight provides gapLight,
         LocalFourteenKeyLayout provides fourteenKey,
+        LocalMergedPairKeys provides mergedPairLayout,
         LocalLongVowelOnL provides (longVowelKey == JapaneseLongVowelKey.L_KEY),
         LocalLetterGeometry provides geometry,
         LocalCustomLayout provides letterLayout,
@@ -727,7 +732,7 @@ fun KeyboardLayout(
                             DummyKeyboardRow(
                                 keys = renderRows.getOrNull(0).orEmpty(),
                                 keySpans = renderSpans?.getOrNull(0),
-                                weightedLetters = LocalCustomLayout.current != null || fourteenKey,
+                                weightedLetters = LocalCustomLayout.current != null || fourteenKey || mergedPairLayout,
                                 keyBackgroundColor = keyBackgroundColor.copy(alpha = 0.5f),
                                 keyboardBackgroundColor = keyboardBackgroundColor,
                                 splitAt = splitAt0, splitGap = splitGapDp, splitRow = 0,
@@ -780,7 +785,7 @@ fun KeyboardLayout(
                             DummyKeyboardRow(
                                 keys = renderRows.getOrNull(1).orEmpty(),
                                 keySpans = renderSpans?.getOrNull(1),
-                                weightedLetters = LocalCustomLayout.current != null || fourteenKey,
+                                weightedLetters = LocalCustomLayout.current != null || fourteenKey || mergedPairLayout,
                                 keyBackgroundColor = keyBackgroundColor.copy(alpha = 0.5f),
                                 keyboardBackgroundColor = keyboardBackgroundColor,
                                 splitAt = splitAt1, splitGap = splitGapDp, splitRow = 1,
@@ -836,7 +841,7 @@ fun KeyboardLayout(
                             DummyBottomRow(
                                 keys = renderRows.getOrNull(2).orEmpty(),
                                 keySpans = renderSpans?.getOrNull(2),
-                                weightedLetters = LocalCustomLayout.current != null || fourteenKey,
+                                weightedLetters = LocalCustomLayout.current != null || fourteenKey || mergedPairLayout,
                                 keyBackgroundColor = keyBackgroundColor.copy(alpha = 0.5f),
                                 specialKeyBackgroundColor = specialKeyBackgroundColor.copy(alpha = 0.5f),
                                 keyboardBackgroundColor = keyboardBackgroundColor,
@@ -1671,7 +1676,7 @@ fun KeyboardRowWithConfig(
 ) {
     val customLayout = LocalCustomLayout.current
     // 14 键合并键与自定义布局一样按字母数占位，和 26 键同一网格对齐。
-    val weighted = customLayout != null || LocalFourteenKeyLayout.current
+    val weighted = customLayout != null || LocalFourteenKeyLayout.current || LocalMergedPairKeys.current
     // 「合并键均匀排布」打开时合并键少占、单字母键多占，整行宽度不变（见 [letterKeySpan]）；
     // 自建布局单独调过宽度的键优先按调过的格数。
     val evenMerged = LocalEvenMergedKeys.current
@@ -2148,7 +2153,7 @@ fun CompactKeyboardRowWithConfig(
                 backgroundColor = config.keyBackgroundColor,
                 textColor = config.keyTextColor,
                 modifier = Modifier.weight(LocalCustomLayout.current?.widths?.get(key)
-                    ?: if (LocalCustomLayout.current != null) key.length.toFloat() else 1f),
+                    ?: if (LocalCustomLayout.current != null || LocalMergedPairKeys.current) key.length.toFloat() else 1f),
                 swipeText = swipeUpText,
                 symbolInputText = symbolInputValue(swipeUpCommitValue, swipeUpAction)
                     .takeUnless { longPressLabels != null && KeysConfigHelper.longPressLetters(isAsciiMode).isNotEmpty() },
