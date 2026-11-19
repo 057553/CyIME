@@ -11,10 +11,11 @@ import java.security.MessageDigest
 // <dir>/libcytranslate-<hash8>-<abi>.so, with <dir> from -Pcyime.translateLibDir, CYIME_TRANSLATE_LIB_DIR or
 // .codex-artifacts/offline-translate/libs. Otherwise it is downloaded from Release `models` / ModelScope.
 // Empty map = no library yet: the APK builds without it (offline translation unsupported everywhere).
-val offlineTranslateLibraryHashes = mapOf<String, String>(
-    "arm64-v8a" to "fbc9172835c1d860f146685d1e77b79e11cc2e4f2aa6c027a9e8023c88a23f55",
-    "x86_64" to "78f1b569ce0d59628a4482059dc4b8cb1714ae86bbb50ecf9833110ec3286ae4",
-)
+// Eta fork: 上游 Release `models` 已经没有 libcytranslate-*.so（2026-11-19 实测 404，
+// GitHub release 与 ModelScope 两个下载源都是 404），官方 release 也会卡在这一步。
+// 这里清空 = 按上游注释的语义「还没有这个库」，APK 照常构建，只是离线翻译插件不可用，
+// 与拼音 / 18 键输入完全无关。上游补回文件后删掉这行注释、恢复上面的 hash 表即可。
+val offlineTranslateLibraryHashes = emptyMap<String, String>()
 val offlineTranslateLibraryRoot = layout.buildDirectory.dir("generated/translate-jniLibs")
 fun offlineTranslateSha256(file: File): String {
     val digest = MessageDigest.getInstance("SHA-256")
