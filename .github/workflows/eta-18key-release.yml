@@ -54,12 +54,16 @@ jobs:
 
       - name: Setup signing keystore
         run: |
-          cat > app/keystore.properties <<'EOF'
-          keyBase64=${{ secrets.SIGNING_KEY }}
-          storePassword=${{ secrets.KEY_STORE_PASSWORD }}
-          keyAlias=${{ secrets.ALIAS }}
-          keyPassword=${{ secrets.KEY_PASSWORD }}
-          EOF
+          # build.gradle.kts 的 keyBase64 分支在配置阶段往 app/build 写文件，目录可能还不存在；
+          # 先落成真实文件，走 storeFile 分支。
+          echo "${{ secrets.SIGNING_KEY }}" | base64 -d > "$GITHUB_WORKSPACE/eta18.jks"
+          mkdir -p app/build
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$GITHUB_WORKSPACE/eta18.jks" \
+            "${{ secrets.KEY_STORE_PASSWORD }}" \
+            "${{ secrets.ALIAS }}" \
+            "${{ secrets.KEY_PASSWORD }}" > app/keystore.properties
+          ls -l "$GITHUB_WORKSPACE/eta18.jks"
 
       - name: Download native deps (ONNX Runtime)
         run: ./gradlew downloadOnnx --no-daemon
