@@ -174,14 +174,30 @@ val downloadOnnx by tasks.registering {
         dstHeaders.listFiles()?.forEach { old ->
             if (old.isFile) old.delete()
         }
+        // Eta fork: 官方 AAR 自 1.2x 起就在 headers/ 里带齐了 C API / EP / 实验接口头文件，
+        // 与 jni/<abi>/libonnxruntime.so 同版本。microsoft/onnxruntime 仓库目前取不到
+        // （raw 与 API 都 404），原来的 raw 下载必然全 404 却只打 WARNING，
+        // 于是等到 CMake 阶段才报 onnxruntime_c_api.h not found。优先直接用 AAR 里的头文件。
+        val aarHeaders = File(aarDir, "headers")
+        if (aarHeaders.isDirectory) {
+            aarHeaders.listFiles()?.filter { it.isFile }?.forEach { header ->
+                header.copyTo(File(dstHeaders, header.name), overwrite = true)
+            }
+            println("Headers from AAR: ${dstHeaders.list()?.size ?: 0} files")
+        }
         for (rel in headersToFetch) {
             val target = java.io.File(dstHeaders, rel.substringAfterLast("/"))
+            if (target.isFile && target.length() > 0) continue
             val url = "$onnxHeadersBase/$rel"
             if (downloadWithMirrors(githubUrls(url), target, buildDir, "onnxruntime header $rel")) {
                 println("Header ok: ${target.name}")
             } else {
                 System.err.println("WARNING: failed to fetch header $rel")
             }
+        }
+        val cApi = File(dstHeaders, "onnxruntime_c_api.h")
+        if (!cApi.isFile || cApi.length() == 0L) {
+            throw GradleException("ONNX Runtime headers missing: ${cApi.absolutePath}（AAR 里没有 headers/，raw 下载也失败）")
         }
 
         // 4. Marker
