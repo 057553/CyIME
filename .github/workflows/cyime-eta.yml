@@ -131,6 +131,19 @@ jobs:
             echo "::warning::skip-install-integrity.patch 不适用，进设置可能会弹一次非官方签名提示"
           fi
 
+      - name: Apply skip-offline-translate patch (best effort)
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          set -uo pipefail
+          P=../patchsrc/.github/eta/skip-offline-translate.patch
+          if git apply --check -p1 "$P" 2>/dev/null; then
+            git apply -p1 "$P"
+            echo "已应用：跳过缺失的 libcytranslate 预编译库（上游该资产 404，只影响翻译插件，不影响语音输入）"
+          else
+            echo "::warning::skip-offline-translate.patch 不适用（上游可能已修好该资产），按原样构建"
+          fi
+
       - name: Apply arm64-only patch (best effort)
         if: steps.skip.outputs.skip != 'true'
         working-directory: src
