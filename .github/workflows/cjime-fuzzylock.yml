@@ -220,16 +220,24 @@ jobs:
         run: |
           set -euo pipefail
           APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | tail -1)
-          mkdir -p out
+          rm -rf out && mkdir -p out
           shopt -s nullglob
           found=0
-          for apk in app/build/outputs/apk/release/*arm64-v8a*.apk; do
+          for apk in app/build/outputs/apk/release/*.apk; do
+            echo "=== 检查 $apk"
+            # splits 关闭时输出文件名不带 ABI（…-universal.apk），所以按包内 lib/ 实际架构判定。
+            ABIS=$(unzip -l "$apk" 'lib/*' | awk -F'lib/' '/lib\//{split($2,a,"/"); print a[1]}' | sort -u)
+            echo "包内架构: $(echo "$ABIS" | tr '\n' ' ')"
+            if [ "$(echo "$ABIS" | tr '\n' ',' )" != "arm64-v8a," ]; then
+              echo "::warning::跳过非纯 arm64 的产物：$apk"
+              continue
+            fi
             "$APKSIGNER" verify --verbose --min-sdk-version 23 "$apk"
             cp "$apk" out/
             found=1
           done
           if [ "$found" = "0" ]; then
-            echo "::error::没有找到 arm64-v8a 的 APK"
+            echo "::error::没有找到纯 arm64-v8a 的 APK"
             ls -l app/build/outputs/apk/release/
             exit 1
           fi
