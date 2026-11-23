@@ -165,6 +165,18 @@ jobs:
             echo "::warning::eta-brand.patch 不适用，应用名仍为 CyIME（与官方版重名）"
           fi
 
+      - name: Apply eta-icon patch (Eta 版应用图标)
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          set -uo pipefail
+          P=../patchsrc/.github/eta/eta-icon.patch
+          if git apply --check -p1 "$P" 2>/dev/null; then
+            git apply -p1 "$P"; echo "已应用：图标换成 Eta 版 η"
+          else
+            echo "::warning::eta-icon.patch 不适用，图标仍是官方样式（不影响功能）"
+          fi
+
       - name: Apply skip-install-integrity patch (best effort)
         if: steps.skip.outputs.skip != 'true'
         working-directory: src
@@ -329,6 +341,13 @@ jobs:
             unzip -l "$APK" "$f" >/dev/null 2>&1 || { echo "::error::缺 $f"; exit 1; }
             echo "  ok  $f"
           done
+
+          echo "=== 应用图标（必须是 Eta 版）==="
+          if "$AAPT2" dump resources "$APK" 2>/dev/null | grep -q "mipmap/eta_launcher"; then
+            echo "  ok  mipmap/eta_launcher"
+          else
+            echo "::warning::包里没有 eta_launcher，图标可能还是官方样式"
+          fi
 
           echo "=== 必须已排除的资产 ==="
           for f in assets/rime/pinyin_simp_ext.dict.yaml \
