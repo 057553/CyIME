@@ -19,9 +19,10 @@
 +    // 英文滑行词表（english_trie.bin 是英文词联想用的，保留）。
 +    listOf("english_bigrams.txt", "english_glide_words.txt")
 +        .forEach { androidResources.ignoreAssetsPatterns.add(it) }
-+    // 数学公式渲染与生僻字字体。
++    // 数学公式渲染。注意：ChaiPUA-0.2.7-snow.ttf 不能排——AppFonts.chaiPuaTypeface 是
++    // 按键标签字体的默认回退，键盘首次渲染就 Typeface.createFromAsset，缺了直接
++    // RuntimeException: Font asset not found，IME 进程崩溃、键盘弹不出来（2026-11-23 实测）。
 +    androidResources.ignoreAssetsPatterns.add("<dir>katex")
-+    androidResources.ignoreAssetsPatterns.add("ChaiPUA-0.2.7-snow.ttf")
      ndkVersion = "29.0.14206865"
  
      // F-Droid 一致性验证：不在 APK 中写入依赖元数据（Dependency metadata 签名块）。

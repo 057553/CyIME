@@ -323,6 +323,7 @@ jobs:
                    assets/association/lccc-base-v1.bin \
                    assets/english_trie.bin \
                    assets/rime_chinese/t9_sentence.vocab \
+                   assets/ChaiPUA-0.2.7-snow.ttf \
                    lib/arm64-v8a/libsherpa-onnx-jni.so \
                    lib/arm64-v8a/libonnxruntime.so; do
             unzip -l "$APK" "$f" >/dev/null 2>&1 || { echo "::error::缺 $f"; exit 1; }
