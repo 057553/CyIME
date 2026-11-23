@@ -79,6 +79,27 @@ jobs:
           fetch-depth: 0
           path: src
 
+      - name: 'Apply PR #575 (stroke filter + consolidated UX)'
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          set -euo pipefail
+          P=../patchsrc/.github/eta/pr575-stroke-filter.patch
+          echo "来源：Cyletix/CyIME PR #575（onlyjco:cjime-consolidated-pr @ d61d7401），75 文件 +3225/-524"
+          echo "含：候选栏笔画筛选、剪贴板收藏、底部留白、若干手势与修复"
+          if ! git apply --check -p1 "$P"; then
+            echo "::error::PR #575 的 diff 无法应用（上游已改动相关文件），需要重新取 PR 快照。"
+            exit 1
+          fi
+          git apply -p1 "$P"
+          echo "=== 笔画筛选落地确认 ==="
+          for f in app/src/main/java/com/kingzcheung/xime/ui/keyboard/CandidateStrokeFilter.kt \
+                   app/src/test/java/com/kingzcheung/xime/ui/keyboard/CandidateStrokeFilterTest.kt; do
+            [ -f "$f" ] && echo "  ok  $f" || { echo "::error::缺 $f"; exit 1; }
+          done
+          grep -n "CandidateStrokeTable\|classifyCandidateStroke\|candidateStrokeGesture" \
+            app/src/main/java/com/kingzcheung/xime/ui/keyboard/CandidateStrokeFilter.kt | head -5
+
       - name: Apply coexist package patch (required)
         if: steps.skip.outputs.skip != 'true'
         working-directory: src
@@ -348,7 +369,26 @@ jobs:
 
             保留：雾凇词库、笔画方案（后面要做笔画筛选）、词联想、离线语音、手写、拼音滑行。
 
-            ## 4 · 只出 arm64-v8a
+            ## 4 · 候选栏笔画筛选（来自 PR #575）
+
+            打了拼音、候选出来之后，**直接在候选区画一笔**，按笔顺首字筛候选：
+
+            ```
+            拼音 jing  →  [经 精 惊 静 竟 景 敬 警 …]
+            画一笔「横」→  [经 敬 警 …]        只留首字第一笔是横的
+            再画「竖」  →  [经 敬 …]           继续筛
+            ```
+
+            退格撤一笔；选词即送首选。
+
+            代码取自社区 PR **Cyletix/CyIME#575**（`onlyjco:cjime-consolidated-pr` @ `d61d7401`），
+            原样使用，没有改写。该 PR 同时带来剪贴板收藏、底部留白抬升、若干手势改进与修复，
+            也一并包含在内。
+
+            笔画码表读的是包内的 `assets/rime_chinese/stroke.dict.yaml`（构建时由
+            `tasks-stroke.gradle.kts` 生成），精简补丁没有排除它。
+
+            ## 5 · 只出 arm64-v8a
 
             native 只编一个 ABI，构建时间减半。
 
@@ -357,9 +397,6 @@ jobs:
             跳过「安装包签名自检」——本包用自建 keystore 签名，否则每次打开设置都会弹
             「非官方签名」警告。
 
-            ## 下一步
-
-            笔画筛选（触宝式：打了拼音后在候选区画一笔，按笔顺筛字）计划加进来，这版还没有。
           files: src/out/*.apk
           fail_on_unmatched_files: true
           draft: false
