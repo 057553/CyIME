@@ -1,0 +1,169 @@
+name: Eta fuzzy-lock fix build & release
+
+# 只手动触发：验证「开模糊音后点读音，近音候选被整批删除」的修复。
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '发布用的 tag'
+        required: true
+        default: 'v1.15.105-fuzzylock'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+
+      - name: Install NDK
+        run: |
+          sdkmanager "ndk;29.0.14206865"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> $GITHUB_ENV
+          echo "ANDROID_NDK=$ANDROID_HOME/ndk/29.0.14206865" >> $GITHUB_ENV
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
+      - name: Check signing secrets
+        run: |
+          if [ -z "${{ secrets.SIGNING_KEY }}" ]; then
+            echo "::error::缺少 SIGNING_KEY 密钥，请先在仓库 Secrets 里配置"
+            exit 1
+          fi
+
+      - name: Setup signing keystore
+        run: |
+          echo "${{ secrets.SIGNING_KEY }}" | base64 -d > "$GITHUB_WORKSPACE/eta18.jks"
+          mkdir -p app/build
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$GITHUB_WORKSPACE/eta18.jks" \
+            "${{ secrets.KEY_STORE_PASSWORD }}" \
+            "${{ secrets.ALIAS }}" \
+            "${{ secrets.KEY_PASSWORD }}" > app/keystore.properties
+          ls -l "$GITHUB_WORKSPACE/eta18.jks"
+
+      - name: Show patched function
+        run: |
+          sed -n '250,300p' app/src/main/jni/librime-t9/src/pinyin_syllable_selection.h
+
+      - name: Download native deps (ONNX Runtime)
+        run: ./gradlew downloadOnnx --no-daemon
+
+      - name: Build signed release APK
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+          ls -l app/build/outputs/apk/release/
+
+      - name: Verify APK signature
+        run: |
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | tail -1)
+          for apk in app/build/outputs/apk/release/*.apk; do
+            "$APKSIGNER" verify --verbose --min-sdk-version 23 "$apk"
+          done
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cyime-fuzzylock-apk
+          path: app/build/outputs/apk/release/*.apk
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: CyIME ${{ inputs.tag }}（模糊音锁定修复）
+          body: |
+            基于 **CyIME 1.15.105**（GPLv3）构建，只改一处 native 逻辑，其余与原版一致。
+
+            ## 修的问题
+
+            开了模糊音，点一下编码上的读音，模糊音的字就全没了。
+
+            以 18 键小鹤双拼打 `jj` 为例（`jk` 键按两下）。这个码同时对应三个音节
+            （jing / kan / kuai），而模糊音 `in/ing` 又让 `jin` 也落到 `jj` 上。
+            实测这一个码下有 **123 个候选、四个读音**：
+
+            | 读音 | 候选数 |
+            |---|---|
+            | jing | 49 |
+            | jin | 43 |
+            | kan | 18 |
+            | kuai | 13 |
+
+            第一屏是：`看 金 快 经 进 块 精 惊 静 竟 近`，金在第 5 位。
+
+            此时在编码上点 `jing`，候选变成：
+
+            `经 精 惊 静 竟 景 敬 警 京 净 镜 境 晶 睛 井 竞 …`
+
+            也就是只剩那 49 个 jing，**另外 74 个（含金、今、斤、进、近、仅、紧、看、快、块、筷）被整批删掉**。
+
+            ## 改动
+
+            `app/src/main/jni/librime-t9/src/pinyin_syllable_selection.h` 的 `ConstrainGraph()`。
+
+            原本锁定读音时会把同一段编码上的其它读音边清空重建：
+
+            ```cpp
+            edge->second.clear();
+            edge->second.emplace(syllable, chosen);
+            ```
+
+            改为：选中的读音保持原权重（排在前面），同段其它的普通读音和模糊音读音
+            保留并降权 `credibility -= 1.0`，简拼 / 纠错类边（`type >= kAbbreviation`）仍然排除。
+
+            ## 本地验证
+
+            用同样的四个读音（jing / kan / kuai / jin）构造 graph，对比改前改后：
+
+            | | [0,2) 段的读音数 | 内容 |
+            |---|---|---|
+            | 锁定前 | 4 | jing(+0.00) kan(+0.00) kuai(+0.00) jin(fuzzy, −0.69) |
+            | 改前 | 1 | jing(+0.00) —— 金 丢失 |
+            | 改后 | 4 | jing(+0.00) kan(−1.00) kuai(−1.00) jin(−1.69) |
+
+            改后：金回来了，但仍然以 jing 为首选。
+
+            回归：
+            - 同段只有 1 个读音时（未开模糊音、非合并键碰撞）：改前改后都是 1，行为不变。
+            - 同段里有 abbreviation（简拼）时：改后没有误留。
+
+            ## 安装注意
+
+            - 这是**另一套签名**（自建 keystore），和官方包签名冲突，需要先卸载官方版再装。
+            - 卸载会丢自建布局、模糊音开关、用户词库。**装之前先在「设置 › 数据与备份」导出 Rime 用户数据**，
+              装完导回去即可恢复（18 键布局是 `q,we,rt,y,u,io,p / a,sd,fg,h,jk,l,_ / z,xc,v,bn,m`）。
+            - 版本回到 1.15.105，比这新的官方包会被降级。
+
+            ## 已知缺失
+
+            离线翻译不可用。上游把这个预编译库发布在 Release `models`（
+            `libcytranslate-fbc91728-arm64-v8a.so`），但该资产现在已经 404（GitHub 与 ModelScope 都试过），
+            上游的 Release 流程也会卡在同一步。这里按代码里写明的「还没有这个库」路径清空了 sha 表，
+            APK 照常产出，只是设备上离线翻译会报告不支持。翻译插件其余功能、输入法本体都不受影响。
+          files: app/build/outputs/apk/release/*.apk
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: false
