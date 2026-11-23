@@ -119,6 +119,19 @@ jobs:
             echo "::warning::arm64-only.patch 不适用（CJIME 可能改了 splits 配置），继续构建全架构，产物仍只上传 arm64"
           fi
 
+      - name: Apply onnx-headers patch (best effort)
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          set -uo pipefail
+          P=../patchsrc/.github/eta/onnx-headers-from-aar.patch
+          if git apply --check -p1 "$P" 2>/dev/null; then
+            git apply -p1 "$P"
+            echo "已应用：ONNX 头文件改从 AAR 取（CJIME 原逻辑从 GitHub raw 下载，现已 404）"
+          else
+            echo "::warning::onnx-headers-from-aar.patch 不适用（CJIME 可能已自行修好），按原样构建"
+          fi
+
       - name: Set up JDK 17
         if: steps.skip.outputs.skip != 'true'
         uses: actions/setup-java@v4
