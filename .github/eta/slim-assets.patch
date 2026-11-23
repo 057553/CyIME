@@ -1,6 +1,6 @@
 --- a/app/build.gradle.kts
 +++ b/app/build.gradle.kts
-@@ -258,6 +258,24 @@
+@@ -258,6 +258,25 @@
          listOf("<dir>rime_japanese", "<dir>azookey", "<dir>rime_letters").forEach { androidResources.ignoreAssetsPatterns.add(it) }
          packaging.jniLibs.excludes.add("**/libCyAzooKey.so")
      }
