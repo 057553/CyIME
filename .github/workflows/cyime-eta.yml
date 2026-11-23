@@ -1,0 +1,353 @@
+name: CyIME eta build (coexist + fuzzylock + slim, arm64)
+
+# 跟随官方 Cyletix/CyIME 的正式版 tag 自动构建：
+#   共存包名 .eta / 模糊音锁定修复 / 精简资产 / 只出 arm64
+# 同一上游版本已发过就跳过（想重建勾 force）。
+on:
+  schedule:
+    - cron: '30 20 * * *'          # UTC 20:30 = 北京 04:30
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: '上游 ref / tag（留空=自动取最新正式版 tag）'
+        required: false
+        default: ''
+      force:
+        description: '该版本已发过也强制重建'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cyime-eta
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve upstream version
+        id: ver
+        run: |
+          set -euo pipefail
+          REF='${{ inputs.upstream_ref }}'
+          if [ -z "$REF" ]; then
+            REF=$(git ls-remote --tags --refs https://github.com/Cyletix/CyIME.git \
+                  | awk -F/ '{print $NF}' \
+                  | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+                  | sort -V | tail -1)
+          fi
+          [ -n "$REF" ] || { echo "::error::没能确定上游版本"; exit 1; }
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "release_tag=v${REF}-eta" >> "$GITHUB_OUTPUT"
+          echo "上游 ref = $REF"
+
+      - name: Skip if already released
+        id: skip
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.ver.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [ '${{ inputs.force }}' = 'true' ]; then
+            echo "force=true，继续构建"; echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "release $TAG 已存在，跳过（要重建请勾 force）"; echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout patch source
+        if: steps.skip.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          path: patchsrc
+          sparse-checkout: |
+            .github/eta
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout upstream
+        if: steps.skip.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: Cyletix/CyIME
+          ref: ${{ steps.ver.outputs.ref }}
+          submodules: recursive
+          fetch-depth: 0
+          path: src
+
+      - name: Apply coexist package patch (required)
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          set -euo pipefail
+          P=../patchsrc/.github/eta/coexist-package.patch
+          if ! git apply --check -p1 "$P"; then
+            echo "::error::coexist-package.patch 无法应用（upstream 改了 buildTypes），需要人工 rebase。"
+            sed -n '155,185p' app/build.gradle.kts || true
+            exit 1
+          fi
+          git apply -p1 "$P"
+          grep -n 'applicationIdSuffix' app/build.gradle.kts
+
+      - name: Apply fuzzy-lock patch (required)
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          set -euo pipefail
+          P=../patchsrc/.github/eta/fuzzylock.patch
+          if ! git apply --check -p1 "$P"; then
+            echo "::error::fuzzylock.patch 无法应用（upstream 改了 ConstrainGraph），需要人工 rebase。"
+            sed -n '240,300p' app/src/main/jni/librime-t9/src/pinyin_syllable_selection.h || true
+            exit 1
+          fi
+          git apply -p1 "$P"
+          sed -n '260,300p' app/src/main/jni/librime-t9/src/pinyin_syllable_selection.h
+
+      - name: Apply slim-assets patch (best effort)
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          set -uo pipefail
+          P=../patchsrc/.github/eta/slim-assets.patch
+          if git apply --check -p1 "$P" 2>/dev/null; then
+            git apply -p1 "$P"; echo "已应用：精简资产"
+          else
+            echo "::warning::slim-assets.patch 不适用，按原样构建（包会大一些）"
+          fi
+
+      - name: Apply skip-install-integrity patch (best effort)
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          set -uo pipefail
+          P=../patchsrc/.github/eta/skip-install-integrity.patch
+          if git apply --check -p1 "$P" 2>/dev/null; then
+            git apply -p1 "$P"; echo "已应用：跳过签名自检（本包自签）"
+          else
+            echo "::warning::skip-install-integrity.patch 不适用，进设置可能会弹一次非官方签名提示"
+          fi
+
+      - name: Apply arm64-only patch (best effort)
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          set -uo pipefail
+          P=../patchsrc/.github/eta/arm64-only.patch
+          if git apply --check -p1 "$P" 2>/dev/null; then
+            git apply -p1 "$P"; echo "已应用：只构建 arm64-v8a"
+          else
+            echo "::warning::arm64-only.patch 不适用，编全架构但只上传 arm64"
+          fi
+
+      - name: Set up JDK 17
+        if: steps.skip.outputs.skip != 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Setup Android SDK
+        if: steps.skip.outputs.skip != 'true'
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+
+      - name: Install NDK
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          set -euo pipefail
+          NDK_VER=$(grep -oE 'ndkVersion[[:space:]]*=[[:space:]]*"[^"]+"' app/build.gradle.kts \
+                    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+          NDK_VER=${NDK_VER:-29.0.14206865}
+          echo "NDK: $NDK_VER"
+          sdkmanager "ndk;$NDK_VER"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VER" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK=$ANDROID_HOME/ndk/$NDK_VER" >> "$GITHUB_ENV"
+
+      - name: Install build tools
+        if: steps.skip.outputs.skip != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
+      - name: Cache native deps
+        if: steps.skip.outputs.skip != 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            src/app/src/main/jni/onnxruntime
+            src/app/src/main/jniLibs/**/libonnxruntime.so
+          key: eta-native-${{ runner.os }}-${{ hashFiles('src/app/build-logic/tasks-native.gradle.kts') }}
+          restore-keys: |
+            eta-native-${{ runner.os }}-
+
+      - name: Cache CMake build
+        if: steps.skip.outputs.skip != 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            src/app/.cxx
+            src/app/src/main/jni/boost
+            src/app/src/main/jni/boost-*.tar.xz
+          key: eta-cmake-${{ runner.os }}-${{ hashFiles('src/app/src/main/jni/CMakeLists.txt') }}
+          restore-keys: |
+            eta-cmake-${{ runner.os }}-
+
+      - name: Setup signing keystore
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+          KEY_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
+          ALIAS: ${{ secrets.ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "${SIGNING_KEY:-}" ] || { echo "::error::缺少 SIGNING_KEY"; exit 1; }
+          # build.gradle.kts 的 keyBase64 分支在配置阶段往 app/build 写文件，目录可能还不存在；
+          # 先落成真实文件，走 storeFile 分支。
+          printf '%s' "$SIGNING_KEY" | base64 -d > "$GITHUB_WORKSPACE/eta.jks"
+          mkdir -p app/build
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$GITHUB_WORKSPACE/eta.jks" "$KEY_STORE_PASSWORD" "$ALIAS" "$KEY_PASSWORD" \
+            > app/keystore.properties
+          ls -l "$GITHUB_WORKSPACE/eta.jks"
+
+      - name: Download native deps (ONNX Runtime)
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          chmod +x gradlew
+          ./gradlew downloadOnnx --no-daemon
+
+      - name: Build signed release APK
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          set -euo pipefail
+          ./gradlew assembleRelease --no-daemon
+          ls -l app/build/outputs/apk/release/
+
+      - name: Verify APK contents
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          set -euo pipefail
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | tail -1)
+          AAPT2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | tail -1)
+          APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          echo "APK: $APK"
+
+          echo "=== 签名 ==="
+          "$APKSIGNER" verify --verbose --min-sdk-version 23 "$APK"
+
+          echo "=== 包名（必须是 com.cyletix.cyime.eta）==="
+          PKG=$("$AAPT2" dump packagename "$APK")
+          echo "package = $PKG"
+          [ "$PKG" = "com.cyletix.cyime.eta" ] || { echo "::error::包名不是 .eta，共存失败"; exit 1; }
+
+          echo "=== 架构（必须只有 arm64-v8a）==="
+          ABIS=$(unzip -l "$APK" 'lib/*' | awk -F'lib/' '/lib\//{split($2,a,"/"); print a[1]}' | sort -u)
+          echo "abis = $(echo "$ABIS" | tr '\n' ' ')"
+          [ "$(echo "$ABIS" | tr '\n' ',')" = "arm64-v8a," ] || { echo "::error::不是纯 arm64"; exit 1; }
+
+          echo "=== 必须存在的资产 ==="
+          for f in assets/rime_ice/cn_dicts/base.dict.yaml \
+                   assets/rime_chinese/t9_pinyin.schema.yaml \
+                   assets/rime_chinese/stroke.schema.yaml \
+                   assets/association/lccc-base-v1.bin \
+                   assets/english_trie.bin \
+                   assets/rime_chinese/t9_sentence.vocab \
+                   lib/arm64-v8a/libsherpa-onnx-jni.so \
+                   lib/arm64-v8a/libonnxruntime.so; do
+            unzip -l "$APK" "$f" >/dev/null 2>&1 || { echo "::error::缺 $f"; exit 1; }
+            echo "  ok  $f"
+          done
+
+          echo "=== 必须已排除的资产 ==="
+          for f in assets/rime/pinyin_simp_ext.dict.yaml \
+                   assets/rime/wubi98.dict.yaml \
+                   assets/rime/wubi86.dict.yaml \
+                   assets/rime_chinese/cyime_cangjie.dict.yaml \
+                   assets/rime_chinese/cyime_quick.dict.yaml \
+                   assets/rime_chinese/cyime_aux_zrm.dict.yaml \
+                   assets/english_bigrams.txt \
+                   assets/english_glide_words.txt \
+                   assets/katex/katex.min.css; do
+            if unzip -l "$APK" "$f" >/dev/null 2>&1; then echo "::warning::仍在包里: $f"; else echo "  gone $f"; fi
+          done
+
+          echo "=== 体积 ==="
+          du -h "$APK"
+
+      - name: Collect APK
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          set -euo pipefail
+          rm -rf out && mkdir -p out
+          cp app/build/outputs/apk/release/*.apk out/
+
+      - name: Create release
+        if: steps.skip.outputs.skip != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.release_tag }}
+          name: CyIME ${{ steps.ver.outputs.ref }} · eta 版（共存 + 模糊音修复 + 精简）
+          body: |
+            基于官方 **CyIME ${{ steps.ver.outputs.ref }}**（GPL-3.0）构建，四个补丁，其余与原版一致。
+
+            ## 1 · 可与官方版共存
+
+            `applicationIdSuffix = ".eta"` → 包名 **`com.cyletix.cyime.eta`**。
+            和官方 `com.cyletix.cyime` 是两个独立应用，**不用卸载官方版**，官方版的
+            自建布局、词库、模糊音开关全部不动。
+
+            装好后需要重新建一次 18 键：
+            `q,we,rt,y,u,io,p / a,sd,fg,h,jk,l,_ / z,xc,v,bn,m`，双拼选小鹤，模糊音开 `in/ing`。
+
+            ## 2 · 模糊音锁定修复
+
+            `ConstrainGraph()`：点选编码上的读音时，原实现把同一段编码上的其它读音边整批清空。
+            合并键布局下一个码本就对应多个音节（小鹤 18 键 `jj` = jing / kan / kuai），模糊音又让
+            `jin` 落到 `jj` 上，于是点一下 `jing`，金 / 看 / 快这些字全没了。
+
+            实测 `jj` 共 123 个候选：jing 49 / jin 43 / kan 18 / kuai 13，金在第 5 位；
+            点 `jing` 后只剩 49 个 jing，另外 74 个被删。
+
+            改为：选中的读音保持原权重排最前，同段其它的普通读音与模糊音读音保留并降权
+            （`credibility -= 1.0`）；简拼 / 纠错类边仍然排除。没点读音时行为完全不变。
+
+            ## 3 · 精简资产（约 −20 MB）
+
+            只保留九键中文、18 键中文、26 键英文用得上的东西：
+
+            - 去掉：五笔 86/98、旧版简体拼音、仓颉、速成、自然码辅码、KaTeX、生僻字字体
+              → 约 15 MB
+            - 去掉：英文滑行词表 `english_bigrams.txt`、`english_glide_words.txt`
+              → 约 4.8 MB（`english_trie.bin` 是英文词联想用的，保留）
+
+            保留：雾凇词库、笔画方案（后面要做笔画筛选）、词联想、离线语音、手写、拼音滑行。
+
+            ## 4 · 只出 arm64-v8a
+
+            native 只编一个 ABI，构建时间减半。
+
+            ## 顺带
+
+            跳过「安装包签名自检」——本包用自建 keystore 签名，否则每次打开设置都会弹
+            「非官方签名」警告。
+
+            ## 下一步
+
+            笔画筛选（触宝式：打了拼音后在候选区画一笔，按笔顺筛字）计划加进来，这版还没有。
+          files: src/out/*.apk
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: false
