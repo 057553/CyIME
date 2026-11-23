@@ -1,0 +1,30 @@
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -110,8 +110,9 @@
+             "com.kingzcheung.xime.ui.UiRenderingTestRunner" else "androidx.test.runner.AndroidJUnitRunner"
+ 
+         // NDK 配置
++        // 只构建 arm64-v8a（本 fork 只为自己这台设备出包，省一半以上 native 编译时间）。
+         ndk {
+-            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
++            abiFilters += listOf("arm64-v8a")
+         }
+ 
+         // 构建信息
+@@ -255,13 +256,13 @@
+         checkDependencies = true
+     }
+ 
+-    // 分架构打包
++    // 分架构打包：只出 arm64-v8a（同上，只为自己设备出包）
+     splits {
+         abi {
+             isEnable = true
+             reset()
+-            include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+-            isUniversalApk = true
++            include("arm64-v8a")
++            isUniversalApk = false
+         }
+     }
+ }
