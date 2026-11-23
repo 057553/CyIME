@@ -1,28 +1,127 @@
-name: Eta fuzzy-lock fix build & release
+name: Eta fuzzy-lock (auto follow upstream)
 
-# 只手动触发：验证「开模糊音后点读音，近音候选被整批删除」的修复。
+# 每天自动检查上游 CyIME 的新版本；有新版本就用同一补丁重新构建并发 release。
+# 同一上游版本已经发过就不再重复构建（想重建就把 force 打开）。
 on:
+  schedule:
+    # UTC 20:10 → 北京 04:10，避开上游发版高峰
+    - cron: '10 20 * * *'
   workflow_dispatch:
     inputs:
-      tag:
-        description: '发布用的 tag'
-        required: true
-        default: 'v1.15.105-fuzzylock'
+      upstream_ref:
+        description: '上游 ref / tag（留空=自动取最新正式版 tag）'
+        required: false
+        default: ''
+      force:
+        description: '该版本已经发过也强制重建'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
+
+concurrency:
+  group: eta-fuzzylock
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Resolve upstream version
+        id: ver
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REF='${{ inputs.upstream_ref }}'
+          if [ -z "$REF" ]; then
+            # 只取形如 1.15.105 的正式版 tag，按版本号排序取最大
+            REF=$(git ls-remote --tags --refs https://github.com/Cyletix/CyIME.git \
+                  | awk -F/ '{print $NF}' \
+                  | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+                  | sort -V | tail -1)
+          fi
+          if [ -z "$REF" ]; then
+            echo "::error::没能确定上游版本"
+            exit 1
+          fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "release_tag=v${REF}-fuzzylock" >> "$GITHUB_OUTPUT"
+          echo "上游 ref = $REF"
+
+      - name: Skip if this version already released
+        id: skip
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.ver.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          FORCE='${{ inputs.force }}'
+          if [ "$FORCE" = "true" ]; then
+            echo "force=true，继续构建"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "release $TAG 已存在，跳过。要重建请勾选 force。"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout patch source
+        if: steps.skip.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
+          path: patchsrc
+          sparse-checkout: |
+            .github/eta
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout upstream
+        if: steps.skip.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: Cyletix/CyIME
+          ref: ${{ steps.ver.outputs.ref }}
           submodules: recursive
           fetch-depth: 0
+          path: src
+
+      - name: Apply fuzzy-lock patch (required)
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          set -euo pipefail
+          P=../patchsrc/.github/eta/fuzzylock.patch
+          echo "=== 补丁内容 ==="
+          cat "$P"
+          echo "=== 应用 ==="
+          if ! git apply --check -p1 "$P"; then
+            echo "::error::fuzzylock.patch 无法应用：上游很可能改动了 pinyin_syllable_selection.h，需要人工 rebase 补丁。"
+            sed -n '240,300p' app/src/main/jni/librime-t9/src/pinyin_syllable_selection.h || true
+            exit 1
+          fi
+          git apply -p1 "$P"
+          echo "=== 应用后 ==="
+          sed -n '260,300p' app/src/main/jni/librime-t9/src/pinyin_syllable_selection.h
+
+      - name: Apply offline-translate skip patch (best effort)
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          set -uo pipefail
+          P=../patchsrc/.github/eta/skip-offline-translate.patch
+          if git apply --check -p1 "$P" 2>/dev/null; then
+            git apply -p1 "$P"
+            echo "已应用：跳过缺失的 libcytranslate 预编译库"
+          else
+            echo "::warning::skip-offline-translate.patch 不适用（上游可能已修好该资产），按原样构建"
+          fi
 
       - name: Set up JDK 17
+        if: steps.skip.outputs.skip != 'true'
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
@@ -30,84 +129,153 @@ jobs:
           cache: 'gradle'
 
       - name: Setup Android SDK
+        if: steps.skip.outputs.skip != 'true'
         uses: android-actions/setup-android@v4
         with:
           packages: platform-tools
 
       - name: Install NDK
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
         run: |
-          sdkmanager "ndk;29.0.14206865"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> $GITHUB_ENV
-          echo "ANDROID_NDK=$ANDROID_HOME/ndk/29.0.14206865" >> $GITHUB_ENV
+          set -euo pipefail
+          NDK_VER=$(grep -oE 'ndkVersion[[:space:]]*=[[:space:]]*"[^"]+"' app/build.gradle.kts 2>/dev/null \
+                    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+          NDK_VER=${NDK_VER:-29.0.14206865}
+          echo "NDK 版本: $NDK_VER"
+          sdkmanager "ndk;$NDK_VER"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VER" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK=$ANDROID_HOME/ndk/$NDK_VER" >> "$GITHUB_ENV"
 
       - name: Install build tools
+        if: steps.skip.outputs.skip != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build
 
-      - name: Check signing secrets
+      - name: Setup signing keystore
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+          KEY_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
+          ALIAS: ${{ secrets.ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          if [ -z "${{ secrets.SIGNING_KEY }}" ]; then
+          set -euo pipefail
+          if [ -z "${SIGNING_KEY:-}" ]; then
             echo "::error::缺少 SIGNING_KEY 密钥，请先在仓库 Secrets 里配置"
             exit 1
           fi
-
-      - name: Setup signing keystore
-        run: |
-          echo "${{ secrets.SIGNING_KEY }}" | base64 -d > "$GITHUB_WORKSPACE/eta18.jks"
+          # build.gradle.kts 的 keyBase64 分支在配置阶段往 app/build 写文件，目录可能还不存在；
+          # 先落成真实文件，走 storeFile 分支。
+          printf '%s' "$SIGNING_KEY" | base64 -d > "$GITHUB_WORKSPACE/eta.jks"
           mkdir -p app/build
           printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
-            "$GITHUB_WORKSPACE/eta18.jks" \
-            "${{ secrets.KEY_STORE_PASSWORD }}" \
-            "${{ secrets.ALIAS }}" \
-            "${{ secrets.KEY_PASSWORD }}" > app/keystore.properties
-          ls -l "$GITHUB_WORKSPACE/eta18.jks"
-
-      - name: Show patched function
-        run: |
-          sed -n '250,300p' app/src/main/jni/librime-t9/src/pinyin_syllable_selection.h
+            "$GITHUB_WORKSPACE/eta.jks" "$KEY_STORE_PASSWORD" "$ALIAS" "$KEY_PASSWORD" \
+            > app/keystore.properties
+          ls -l "$GITHUB_WORKSPACE/eta.jks"
 
       - name: Download native deps (ONNX Runtime)
-        run: ./gradlew downloadOnnx --no-daemon
-
-      - name: Build signed release APK
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
         run: |
           chmod +x gradlew
+          ./gradlew downloadOnnx --no-daemon
+
+      - name: Build signed release APK
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          set -euo pipefail
           ./gradlew assembleRelease --no-daemon
           ls -l app/build/outputs/apk/release/
 
       - name: Verify APK signature
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
         run: |
+          set -euo pipefail
           APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | tail -1)
           for apk in app/build/outputs/apk/release/*.apk; do
             "$APKSIGNER" verify --verbose --min-sdk-version 23 "$apk"
           done
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: cyime-fuzzylock-apk
-          path: app/build/outputs/apk/release/*.apk
-
       - name: Create release
+        if: steps.skip.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.tag }}
-          name: CyIME ${{ inputs.tag }}
+          tag_name: ${{ steps.ver.outputs.release_tag }}
+          name: CyIME ${{ steps.ver.outputs.ref }}（模糊音锁定修复）
           body: |
-            基于 CyIME 1.15.105（GPLv3），仅改动一处：
+            基于上游 **CyIME ${{ steps.ver.outputs.ref }}**（GPLv3）构建，只改一处 native 逻辑，其余与原版一致。
+
+            自动追踪上游：每天检查 CyIME 的新版本，有新版本就用同一补丁重建并发布。
+
+            ## 修的问题
+
+            开了模糊音，点一下编码上的读音，模糊音的字就全没了。
+
+            以 18 键小鹤双拼打 `jj` 为例（`jk` 键按两下）。这个码同时对应三个音节
+            （jing / kan / kuai），而模糊音 `in/ing` 又让 `jin` 也落到 `jj` 上。
+            实测这一个码下有 **123 个候选、四个读音**：
+
+            | 读音 | 候选数 |
+            |---|---|
+            | jing | 49 |
+            | jin | 43 |
+            | kan | 18 |
+            | kuai | 13 |
+
+            第一屏是：`看 金 快 经 进 块 精 惊 静 竟 近`，金在第 5 位。
+
+            此时在编码上点 `jing`，候选变成：
+
+            `经 精 惊 静 竟 景 敬 警 京 净 镜 境 晶 睛 井 竞 …`
+
+            即只剩那 49 个 jing，**另外 74 个（含金、今、斤、进、近、仅、紧、看、快、块、筷）被整批删掉**。
+
+            ## 改动
 
             `app/src/main/jni/librime-t9/src/pinyin_syllable_selection.h` 的 `ConstrainGraph()`。
 
-            原来的做法是：点选编码里的读音时，把同一段编码上的其它读音边整批清空。合并键布局下一个
-            码本就对应多个音节（小鹤 18 键里 `jj` = jing / kan / kuai），模糊音又让 `jin` 落到 `jj` 上，
-            于是点一下 `jing`，金 / 看 / 快这些字就全没了。
+            原本锁定读音时把同一段编码上的其它读音边清空重建：
 
-            改后：锁定只决定排序——选中的读音保持原权重排在前面，同段的其它普通读音和模糊音读音
-            保留并降权（credibility −1.0），简拼 / 纠错类边仍然照旧排除。
+            ```cpp
+            edge->second.clear();
+            edge->second.emplace(syllable, chosen);
+            ```
 
-            同段只有一个读音时（没开模糊音、也不是合并键碰撞）行为完全不变。
-          files: app/build/outputs/apk/release/*.apk
+            改为：选中的读音保持原权重（排最前），同段其它的普通读音与模糊音读音保留并降权
+            `credibility -= 1.0`；简拼 / 纠错类边（`type >= kAbbreviation`）仍然排除。
+
+            ## 本地验证
+
+            用同样四个读音（jing / kan / kuai / jin）构造 graph 对比：
+
+            | | [0,2) 段读音数 | 内容 |
+            |---|---|---|
+            | 锁定前 | 4 | jing(+0.00) kan(+0.00) kuai(+0.00) jin(fuzzy, −0.69) |
+            | 改前 | 1 | jing(+0.00) —— 金 丢失 |
+            | 改后 | 4 | jing(+0.00) kan(−1.00) kuai(−1.00) jin(−1.69) |
+
+            改后金回来了，且仍以 jing 为首选。
+
+            回归：同段只有 1 个读音时改前改后一致；同段有 abbreviation（简拼）时改后没有误留。
+
+            ## 安装注意
+
+            - 这是**另一套签名**（自建 keystore），与官方包签名冲突，需先卸载官方版。
+            - 卸载会丢自建布局、模糊音开关、用户词库。**装前先「设置 › 数据与备份」导出 Rime 用户数据**，
+              装完导回即可恢复（18 键布局：`q,we,rt,y,u,io,p / a,sd,fg,h,jk,l,_ / z,xc,v,bn,m`）。
+
+            ## 已知缺失
+
+            离线翻译不可用。上游把 `libcytranslate-fbc91728-arm64-v8a.so` 放在 Release `models`，
+            该资产现已 404（GitHub 与 ModelScope 均试过），上游自己的 Release 流程也会卡在同一步。
+            这里按代码里写明的「还没有这个库」分支清空了 sha 表，APK 照常产出，仅离线翻译报告不支持。
+            上游补回资产后该补丁会自动跳过应用。
+          files: src/app/build/outputs/apk/release/*.apk
           fail_on_unmatched_files: true
           draft: false
           prerelease: false
