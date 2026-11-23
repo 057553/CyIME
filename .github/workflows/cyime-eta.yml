@@ -140,6 +140,31 @@ jobs:
             echo "::warning::slim-assets.patch 不适用，按原样构建（包会大一些）"
           fi
 
+      - name: Apply slim-manifest-sync patch (与精简资产必须同步)
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          set -uo pipefail
+          P=../patchsrc/.github/eta/slim-manifest-sync.patch
+          if git apply --check -p1 "$P" 2>/dev/null; then
+            git apply -p1 "$P"; echo "已应用：词库清单跳过被精简的资产"
+          else
+            echo "::error::slim-manifest-sync.patch 无法应用。词库清单会列出被 ignoreAssetsPatterns 排除的资产，安装后自动准备抛 FileNotFoundException 并无限重试。"
+            exit 1
+          fi
+
+      - name: Apply eta-brand patch (应用名区分官方版)
+        if: steps.skip.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          set -uo pipefail
+          P=../patchsrc/.github/eta/eta-brand.patch
+          if git apply --check -p1 "$P" 2>/dev/null; then
+            git apply -p1 "$P"; echo "已应用：应用名改为 CyIME Eta"
+          else
+            echo "::warning::eta-brand.patch 不适用，应用名仍为 CyIME（与官方版重名）"
+          fi
+
       - name: Apply skip-install-integrity patch (best effort)
         if: steps.skip.outputs.skip != 'true'
         working-directory: src
