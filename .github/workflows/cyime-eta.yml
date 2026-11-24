@@ -1,15 +1,28 @@
 name: CyIME eta build (coexist + fuzzylock + slim, arm64)
 
-# 跟随官方 Cyletix/CyIME 的正式版 tag 自动构建：
-#   共存包名 .eta / 模糊音锁定修复 / 精简资产 / 只出 arm64
-# 同一上游版本已发过就跳过（想重建勾 force）。
+# 基于官方 Cyletix/CyIME 构建：共存包名 .eta / 模糊音锁定修复 / 笔画候选筛选 /
+# 精简资产 / Eta 图标 / 只出 arm64。
+#
+# ── 版本锁定在 1.15.105（重要）────────────────────────────────────────
+# 本 fork 的「笔画选字」= PR #575 的候选栏笔画筛选（CandidateStrokeFilter）：
+# 拼音出候选后从空格键起笔，按笔形过滤当前候选。
+#
+# 上游 1.15.106 加的笔画功能是另一件事：独立的笔画输入键盘
+# （StrokeKeyboardLayout / StrokePreedit / StrokeGlyphInline / StrokeCellDictionary），
+# 用 hspnz 一个字一个字打，不碰拼音候选。两者互补、不替代，且上游没有
+# CandidateStrokeFilter.kt（已核对 1.15.106 完整文件树）。
+#
+# 1.15.106 还改了 StrokePreedit.kt / RimeConfigHelper.kt / RimeEngine.kt 等
+# PR #575 碰过的文件，快照 patch 直接 apply 失败。因此默认锁死 1.15.105：
+# 要试新版请手动填 upstream_ref，并接受 PR #575 那步可能报错中止。
+# 同一版本已发过就跳过（想重建勾 force）。
 on:
   schedule:
     - cron: '30 20 * * *'          # UTC 20:30 = 北京 04:30
   workflow_dispatch:
     inputs:
       upstream_ref:
-        description: '上游 ref / tag（留空=自动取最新正式版 tag）'
+        description: '上游 ref / tag（留空=用锁定的 1.15.105，见文件头说明）'
         required: false
         default: ''
       force:
@@ -30,16 +43,22 @@ jobs:
     steps:
       - name: Resolve upstream version
         id: ver
+        env:
+          # 锁定的上游版本：PR #575 的候选笔画筛选只在这个版本上能干净应用。
+          # 升级前必须先确认 PR #575（或等效实现）还能用，见文件头说明。
+          PINNED_UPSTREAM: '1.15.105'
         run: |
           set -euo pipefail
           REF='${{ inputs.upstream_ref }}'
           if [ -z "$REF" ]; then
-            REF=$(git ls-remote --tags --refs https://github.com/Cyletix/CyIME.git \
-                  | awk -F/ '{print $NF}' \
-                  | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
-                  | sort -V | tail -1)
+            REF="$PINNED_UPSTREAM"
+            echo "使用锁定版本 $REF（不自动跟最新 tag）"
+          else
+            echo "手动指定上游 ref = $REF"
+            if [ "$REF" != "$PINNED_UPSTREAM" ]; then
+              echo "::warning::偏离锁定版本 $PINNED_UPSTREAM，PR #575 笔画筛选补丁可能无法应用"
+            fi
           fi
-          [ -n "$REF" ] || { echo "::error::没能确定上游版本"; exit 1; }
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
           echo "release_tag=v${REF}-eta" >> "$GITHUB_OUTPUT"
           echo "上游 ref = $REF"
