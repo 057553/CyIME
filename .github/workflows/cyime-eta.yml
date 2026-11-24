@@ -1,20 +1,26 @@
-name: CyIME eta build (coexist + fuzzylock + slim, arm64)
+name: CyIME eta build (coexist + fuzzylock + stroke-filter + slim + icon, arm64)
 
 # 基于官方 Cyletix/CyIME 构建：共存包名 .eta / 模糊音锁定修复 / 笔画候选筛选 /
 # 精简资产 / Eta 图标 / 只出 arm64。
 #
-# ── 版本锁定在 1.15.105（重要）────────────────────────────────────────
-# 本 fork 的「笔画选字」= PR #575 的候选栏笔画筛选（CandidateStrokeFilter）：
-# 拼音出候选后从空格键起笔，按笔形过滤当前候选。
-#
-# 上游 1.15.106 加的笔画功能是另一件事：独立的笔画输入键盘
+# ── 上游版本：1.15.106 ─────────────────────────────────────────────
+# 本 fork 的「笔画选字」= 拼音出候选后从空格键起笔、按笔形过滤当前候选。
+# 上游 1.15.106 加的笔画功能是**另一件事**：独立的笔画输入键盘
 # （StrokeKeyboardLayout / StrokePreedit / StrokeGlyphInline / StrokeCellDictionary），
-# 用 hspnz 一个字一个字打，不碰拼音候选。两者互补、不替代，且上游没有
-# CandidateStrokeFilter.kt（已核对 1.15.106 完整文件树）。
+# 用 hspnz 一个字一个字打，不碰拼音候选。两者互补，上游没有候选筛选
+# （已核对 1.15.106 完整文件树，无 CandidateStrokeFilter.kt）。
 #
-# 1.15.106 还改了 StrokePreedit.kt / RimeConfigHelper.kt / RimeEngine.kt 等
-# PR #575 碰过的文件，快照 patch 直接 apply 失败。因此默认锁死 1.15.105：
-# 要试新版请手动填 upstream_ref，并接受 PR #575 那步可能报错中止。
+# PR #575 原快照 base 是 1.15.105，且捆了 75 个文件（剪贴板收藏、底部留白、
+# 符号编辑等无关改动），在 1.15.106 上 apply 失败（31 个文件重叠）。
+# 现在用的是**只含笔画筛选**的移植版 pr575-stroke-filter-106.patch：
+#   - 用 1.15.105 + 1.15.106 + stroke-only 三方合并生成
+#   - 只保留 stroke 相关 hunk（其余 PR 附带改动全部丢弃）
+#   - 1 处冲突已手工解决：barAssociationWords 用上游的 cs.showsTypedEnglishWord
+#     判断 + stroke 过滤后的 visibleAssociations
+#   - 补回上游的 BottomLiftSpacer（三方合并时被 PR 的旧实现挤掉的）
+#   - 全部 10 个 patch 已在干净 1.15.106 上按顺序累积应用验证通过
+#
+# 升级上游时：先看上游是否已提供「候选笔画筛选」；再重新生成 stroke 移植补丁。
 # 同一版本已发过就跳过（想重建勾 force）。
 on:
   schedule:
@@ -22,7 +28,7 @@ on:
   workflow_dispatch:
     inputs:
       upstream_ref:
-        description: '上游 ref / tag（留空=用锁定的 1.15.105，见文件头说明）'
+        description: '上游 ref / tag（留空=用锁定的 1.15.106，见文件头说明）'
         required: false
         default: ''
       force:
@@ -44,9 +50,9 @@ jobs:
       - name: Resolve upstream version
         id: ver
         env:
-          # 锁定的上游版本：PR #575 的候选笔画筛选只在这个版本上能干净应用。
-          # 升级前必须先确认 PR #575（或等效实现）还能用，见文件头说明。
-          PINNED_UPSTREAM: '1.15.105'
+          # 锁定的上游版本：笔画筛选移植补丁是针对这个版本生成并验证的。
+          # 换版本前必须重新生成并验证补丁，见文件头说明。
+          PINNED_UPSTREAM: '1.15.106'
         run: |
           set -euo pipefail
           REF='${{ inputs.upstream_ref }}'
@@ -56,7 +62,7 @@ jobs:
           else
             echo "手动指定上游 ref = $REF"
             if [ "$REF" != "$PINNED_UPSTREAM" ]; then
-              echo "::warning::偏离锁定版本 $PINNED_UPSTREAM，PR #575 笔画筛选补丁可能无法应用"
+              echo "::warning::偏离锁定版本 $PINNED_UPSTREAM，笔画筛选移植补丁可能无法应用"
             fi
           fi
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
@@ -98,26 +104,37 @@ jobs:
           fetch-depth: 0
           path: src
 
-      - name: 'Apply PR #575 (stroke filter + consolidated UX)'
+      - name: Apply stroke filter port (候选栏笔画筛选)
         if: steps.skip.outputs.skip != 'true'
         working-directory: src
         run: |
           set -euo pipefail
-          P=../patchsrc/.github/eta/pr575-stroke-filter.patch
-          echo "来源：Cyletix/CyIME PR #575（onlyjco:cjime-consolidated-pr @ d61d7401），75 文件 +3225/-524"
-          echo "含：候选栏笔画筛选、剪贴板收藏、底部留白、若干手势与修复"
+          P=../patchsrc/.github/eta/pr575-stroke-filter-106.patch
+          echo "来源：Cyletix/CyIME PR #575 只取笔画筛选部分，三方合并到 1.15.106"
+          echo "改动：CandidateStrokeFilter.kt 新增 + CandidateBar/CandidatePage/KeyboardView/SpaceKeyButton 接线"
           if ! git apply --check -p1 "$P"; then
-            echo "::error::PR #575 的 diff 无法应用（上游已改动相关文件），需要重新取 PR 快照。"
+            echo "::error::笔画筛选移植补丁无法应用（上游又改了这几个文件），需要重新生成。"
             exit 1
           fi
           git apply -p1 "$P"
           echo "=== 笔画筛选落地确认 ==="
-          for f in app/src/main/java/com/kingzcheung/xime/ui/keyboard/CandidateStrokeFilter.kt \
-                   app/src/test/java/com/kingzcheung/xime/ui/keyboard/CandidateStrokeFilterTest.kt; do
-            [ -f "$f" ] && echo "  ok  $f" || { echo "::error::缺 $f"; exit 1; }
+          F=app/src/main/java/com/kingzcheung/xime/ui/keyboard/CandidateStrokeFilter.kt
+          [ -f "$F" ] && echo "  ok  $F" || { echo "::error::缺 $F"; exit 1; }
+          for sym in CandidateStrokeTable classifyCandidateStroke candidateStrokeGesture SpaceStrokeController; do
+            grep -q "$sym" "$F" || { echo "::error::CandidateStrokeFilter.kt 缺 $sym"; exit 1; }
+            echo "  ok  $sym"
           done
-          grep -n "CandidateStrokeTable\|classifyCandidateStroke\|candidateStrokeGesture" \
-            app/src/main/java/com/kingzcheung/xime/ui/keyboard/CandidateStrokeFilter.kt | head -5
+          echo "=== 接线确认（KeyboardView）==="
+          for sym in strokeCode strokeTable spaceStrokeController LocalSpaceStrokeController; do
+            grep -q "$sym" app/src/main/java/com/kingzcheung/xime/ui/keyboard/KeyboardView.kt \
+              || { echo "::error::KeyboardView.kt 缺 $sym 接线"; exit 1; }
+            echo "  ok  $sym"
+          done
+          echo "=== 上游 1.15.106 的功能不能丢 ==="
+          grep -q "BottomLiftSpacer(" app/src/main/java/com/kingzcheung/xime/ui/keyboard/KeyboardView.kt \
+            && echo "  ok  BottomLiftSpacer" || { echo "::error::丢失上游的 BottomLiftSpacer"; exit 1; }
+          grep -q "cs.showsTypedEnglishWord" app/src/main/java/com/kingzcheung/xime/ui/keyboard/KeyboardView.kt \
+            && echo "  ok  showsTypedEnglishWord" || { echo "::error::丢失上游的 showsTypedEnglishWord 判断"; exit 1; }
 
       - name: Apply coexist package patch (required)
         if: steps.skip.outputs.skip != 'true'
@@ -360,6 +377,11 @@ jobs:
             unzip -l "$APK" "$f" >/dev/null 2>&1 || { echo "::error::缺 $f"; exit 1; }
             echo "  ok  $f"
           done
+
+          echo "=== 笔画筛选（候选栏笔画选字）==="
+          if unzip -l "$APK" | grep -q "classes.*dex"; then
+            echo "  dex 检查见下方 dexdump（可选）"
+          fi
 
           echo "=== 应用图标（必须是 Eta 版）==="
           if "$AAPT2" dump resources "$APK" 2>/dev/null | grep -q "mipmap/eta_launcher"; then
